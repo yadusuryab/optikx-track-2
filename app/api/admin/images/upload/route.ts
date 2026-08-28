@@ -1,8 +1,9 @@
 // app/api/admin/images/upload/route.ts
 import { uploadToCloudinary } from '@/lib/cloudinary';
 import { connectToDatabase } from '@/lib/mongodb';
-import { extractTextFromImage } from '@/lib/vision'; // ← removed detectDocumentType
+import { extractTextFromImage } from '@/lib/vision';
 import Image from '@/models/Image';
+import { AnyAaaaRecord } from 'dns';
 import { NextResponse } from 'next/server';
 import sharp from 'sharp';
 
@@ -25,16 +26,43 @@ export async function POST(request: Request) {
 
     // Buffer
     const arrayBuffer = await file.arrayBuffer();
-    let processedBuffer: Buffer<ArrayBuffer> = Buffer.from(arrayBuffer as ArrayBuffer);
+    const originalBuffer: Buffer<ArrayBuffer> = Buffer.from(arrayBuffer as ArrayBuffer);
+    let processedBuffer: Buffer<ArrayBuffer> = originalBuffer;
     const maxSize = 1 * 1024 * 1024;
 
-    // Compress if needed
+    // OCR reads best off a sharp source — but the free OCR.space key hard-caps
+    // uploads at 1MB, and a request over that limit fails outright (this was
+    // the actual cause of "not read" on larger photos, not orientation).
+    // Sharpen for legibility, then shrink to fit the 1MB ceiling.
+    const ocrMaxSize = 1 * 1024 * 1024;
+    let ocrBuffer: any = await sharp(originalBuffer)
+      .resize(2000, 2000, { fit: 'inside', withoutEnlargement: true })
+      .sharpen()
+      .jpeg({ quality: 90, mozjpeg: true })
+      .toBuffer();
+
+    if (ocrBuffer.length > ocrMaxSize) {
+      let quality = 85;
+      let dim = 1800;
+      while (ocrBuffer.length > ocrMaxSize && (quality >= 40 || dim >= 1000)) {
+        ocrBuffer = await sharp(originalBuffer)
+          .resize(dim, dim, { fit: 'inside', withoutEnlargement: true })
+          .sharpen()
+          .jpeg({ quality, mozjpeg: true })
+          .toBuffer();
+        if (ocrBuffer.length <= ocrMaxSize) break;
+        quality -= 10;
+        if (quality < 40) { quality = 85; dim -= 200; }
+      }
+    }
+
+    // Compress the storage copy if needed (unrelated to the OCR copy above)
     if (processedBuffer.length > maxSize) {
       let quality = 85;
       let compressed :any= processedBuffer;
 
       while (quality >= 50 && compressed.length > maxSize) {
-        compressed = await sharp(processedBuffer)
+        compressed = await sharp(originalBuffer)
           .jpeg({ quality, mozjpeg: true, chromaSubsampling: '4:4:4' })
           .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
           .toBuffer();
@@ -59,13 +87,16 @@ export async function POST(request: Request) {
     };
 
     try {
-      extractedData = await extractTextFromImage(processedBuffer);
+      extractedData = await extractTextFromImage(ocrBuffer);
       console.log('✅ OCR done:', {
         name: extractedData.name,
         phone: extractedData.phoneNumber,
         city: extractedData.city,
         tracking: extractedData.trackingId,
       });
+      if (!extractedData.name && !extractedData.phoneNumber && !extractedData.pincode) {
+        console.warn('⚠️ OCR returned no structured fields for this upload — check image quality/orientation.');
+      }
     } catch (ocrError: any) {
       console.warn('⚠️ OCR failed, continuing without extraction:', ocrError.message);
     }
@@ -104,7 +135,7 @@ export async function POST(request: Request) {
     // ── Save to DB ─────────────────────────────────────────────────────────
     const imageDoc = new Image({
       title,
-      description: extractedData.address || '',
+      description: extractedData.address || extractedData.otherText || title || 'No description available',
       publicId,
       url,
       width,
