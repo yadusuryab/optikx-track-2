@@ -21,7 +21,7 @@ const CONTACT = {
     address: "hello.optikx@gmail.com",
   },
   phones: [
-    { label: "Contact 1",   number: "+91 9074717848", href: "tel:+919074717848" },
+    { label: "Contact 1",   number: "+91 7034706721", href: "tel:+917034706721" },
     { label: "Contact 2",   number: "+91 9947120601", href: "tel:+919947120601" },
     { label: "Contact 3",  number: "+91 7356706721", href: "tel:+917356706721" },
   ],
